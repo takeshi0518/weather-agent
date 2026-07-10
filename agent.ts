@@ -1,11 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { calcCost } from './calc-cost';
+
+type TurnLog = {
+  turn: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+};
 
 const client = new Anthropic();
-
-const PRICING: Record<string, { input: number; output: number }> = {
-  'claude-haiku-4-5': { input: 1.0, output: 5.0 },
-  'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
-};
 
 const MODEL = 'claude-haiku-4-5';
 
@@ -35,34 +38,39 @@ const tools: Anthropic.Tool[] = [
   },
 ];
 
+function printTrace(trace: TurnLog[]) {
+  console.log('\n=== 実行トレース ===');
+  let totalCost = 0;
+  let totalIn = 0;
+  let totalOut = 0;
+  for (const t of trace) {
+    console.log(
+      `ターン${t.turn}: 入力${t.inputTokens} / 出力${
+        t.outputTokens
+      }トークン → $${t.costUsd.toFixed(6)}`
+    );
+    totalCost += t.costUsd;
+    totalIn += t.inputTokens;
+    totalOut += t.outputTokens;
+  }
+  console.log(
+    `--- 合計: 入力${totalIn} / 出力${totalOut}トークン → $${totalCost.toFixed(
+      6
+    )}`
+  );
+  console.log(
+    `--- 円換算（1ドル150円想定）: 約${(totalCost * 150).toFixed(4)}円`
+  );
+}
+
 const toolRegistry: Record<string, (input: any) => string> = {
   get_weather: (input) => getWeather(input.city),
 };
-
-type TurnLog = {
-  turn: number;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-};
-
-function calcCost(
-  model: string,
-  inputTokens: number,
-  outputTokens: number
-): number {
-  const rate = PRICING[model];
-
-  const inputCost = (inputTokens / 1_000_000) * rate.input;
-  const outputCost = (outputTokens / 1_000_000) * rate.output;
-  return inputCost + outputCost;
-}
 
 async function main() {
   const messages: Anthropic.MessageParam[] = [
     { role: 'user', content: '大阪、明日は何を着ればいい？' },
   ];
-
   const trace: TurnLog[] = [];
   const maxIterations = 5;
 
@@ -79,6 +87,7 @@ async function main() {
       response.usage.input_tokens,
       response.usage.output_tokens
     );
+
     trace.push({
       turn: i + 1,
       inputTokens: response.usage.input_tokens,
@@ -104,16 +113,21 @@ async function main() {
           `[ツール実行] ${block.name}(${JSON.stringify(block.input)})`
         );
 
-        let result = '';
-        if (block.name === 'get_weather') {
-          const input = block.input as { city: string };
-          result = getWeather(input.city);
+        const fn = toolRegistry[block.name];
+        let result: string;
+        let isError = false;
+        if (fn) {
+          result = fn(block.input);
+        } else {
+          result = `エラー: ツール "${block.name}"は存在しません`;
+          isError = true;
         }
 
         toolResults.push({
           type: 'tool_result',
           tool_use_id: block.id,
           content: result,
+          is_error: isError,
         });
       }
     }
@@ -123,31 +137,6 @@ async function main() {
 
   console.log('maxIterationsに達しました');
   printTrace(trace);
-}
-
-function printTrace(trace: TurnLog[]) {
-  console.log('\n=== 実行トレース ===');
-  let totalCost = 0;
-  let totalIn = 0;
-  let totalOut = 0;
-  for (const t of trace) {
-    console.log(
-      `ターン${t.turn}: 入力${t.inputTokens} / 出力${
-        t.outputTokens
-      }トークン → $${t.costUsd.toFixed(6)}`
-    );
-    totalCost += t.costUsd;
-    totalIn += t.inputTokens;
-    totalOut += t.outputTokens;
-  }
-  console.log(
-    `--- 合計: 入力${totalIn} / 出力${totalOut}トークン → $${totalCost.toFixed(
-      6
-    )}`
-  );
-  console.log(
-    `--- 円換算（1ドル150円想定）: 約${(totalCost * 150).toFixed(4)}円`
-  );
 }
 
 main();
